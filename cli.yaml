@@ -1,0 +1,36 @@
+---
+name: kvs
+version: 0.1.0
+author: Kartik Sharma <kartiksharma@duck.com>
+about: The keyvalue store stores values in-memory and offers a cmd client
+args:
+  - verbose:
+      short: v
+      multiple_occurrences: true
+      about: Sets the level of verbosity
+subcommands:
+  - set:
+      about: Set the value of a string key to a string
+      args:
+        - KEY:
+            about: The key to use
+            required: true
+            index: 1
+        - VALUE:
+            about: The value to use
+            required: true
+            index: 2
+  - get:
+      about: Get the string value of a given string key
+      args:
+        - KEY:
+            about: The key to use
+            required: true
+            index: 1
+  - rm:
+      about: Remove a given key
+      args:
+        - KEY:
+            about: The key to use
+            required: true
+            index: 1
