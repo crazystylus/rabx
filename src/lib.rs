@@ -3,111 +3,148 @@
 
 #![deny(missing_docs)]
 mod command;
-use anyhow::{anyhow, Context, Result};
+pub use anyhow::Result;
+use anyhow::{anyhow, Context};
 use std::collections::{hash_map::RandomState, HashMap};
 use std::fs::OpenOptions;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
 /// This struct stores the key-value pairs using a HashMap
 pub struct KvStore {
-    hm: HashMap<String, String, RandomState>,
-}
-
-impl Default for KvStore {
-    fn default() -> Self {
-        Self::new()
-    }
+    hm: HashMap<String, u64, RandomState>,
+    db_path: PathBuf,
 }
 
 impl KvStore {
-    /// This returns a new key value store
-    ///
-    /// # Examples
-    /// ```
-    /// let mut my_kvs = kvs::KvStore::new();
-    /// ```
-    pub fn new() -> Self {
-        Self { hm: HashMap::new() }
+    /// This opens the key value store from the file
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        let mut kvs = HashMap::new();
+        // Open DB
+        let mut db_path: PathBuf = path.into();
+        db_path.push("db");
+        db_path.set_extension("bson");
+        let f = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&db_path)
+            .with_context(|| {
+                format!(
+                    "Unable to open the database file: {} for reading",
+                    db_path.to_str().unwrap()
+                )
+            })?;
+        let mut db_reader = BufReader::new(f);
+        // Restore hash_map
+        loop {
+            let curr_pos = db_reader.stream_position().unwrap();
+            match bson::de::from_reader::<_, command::Command>(&mut db_reader) {
+                Ok(doc) => match doc {
+                    command::Command::Set { key, .. } => kvs.insert(key, curr_pos),
+                    command::Command::Rm { key } => kvs.remove(&key),
+                },
+                Err(_) => break,
+            };
+        }
+        Ok(KvStore { hm: kvs, db_path })
     }
 
     /// Gets the value associated with that respective key
     /// # Examples
     /// ```
+    /// use anyhow::{anyhow, Result};
+    /// use tempfile::TempDir;
     /// let value1 = String::from("value1");
-    /// let mut my_kvs = kvs::KvStore::new();
-    /// my_kvs.set(String::from("key1"), value1);
-    /// assert_eq!(my_kvs.get(String::from("key1")), Some(String::from("value1")));
-    /// assert_eq!(my_kvs.get(String::from("key2")), None);
+    /// let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    /// let mut my_kvs = kvs::KvStore::open(temp_dir.path()).unwrap();
+    /// my_kvs.set(String::from("key1"), value1).unwrap();
+    /// assert_eq!(my_kvs.get(String::from("key1")).unwrap().unwrap(), String::from("value1"));
+    /// assert_eq!(my_kvs.get(String::from("key2")).unwrap_err().to_string(), String::from("Key not found"));
     /// ```
-    pub fn get(&mut self, key: String) -> Result<String> {
-        // Open DB
-        let f = OpenOptions::new()
-            .read(true)
-            .open("db.bson")
-            .with_context(|| {
-                "Unable to open the database file: \"db.bson\" for reading".to_string()
-            })?;
-        let mut db_reader = BufReader::new(f);
-        // Restore hash_map
-        loop {
-            match bson::de::from_reader::<_, command::Command>(&mut db_reader) {
-                Ok(doc) => match doc {
-                    command::Command::Set { key, value } => self.hm.insert(key, value),
-                    command::Command::Rm { key } => self.hm.remove(&key),
-                },
-                Err(_) => break,
-            };
-        }
-        let value = self
+    pub fn get(&self, key: String) -> Result<Option<String>> {
+        let record_pos = self
             .hm
             .get(&key)
             .map(|value| value.to_owned())
-            .ok_or(anyhow!("key: {} not found in store", key))?;
-        Ok(value)
+            .ok_or(anyhow!("Key not found"))?;
+        let f = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&self.db_path)
+            .with_context(|| {
+                format!(
+                    "Unable to open the database file: {} for reading",
+                    self.db_path.to_str().unwrap()
+                )
+            })?;
+        let mut db_reader = BufReader::new(f);
+        db_reader.seek(SeekFrom::Start(record_pos))?;
+        match bson::de::from_reader::<_, command::Command>(&mut db_reader)? {
+            command::Command::Set { value, .. } => Ok(Some(value)),
+            _ => Err(anyhow!("Key not found")),
+        }
     }
 
     /// Inserts a `key`:`value` pair into the
     /// key value store
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let kvs_command = bson::to_document(&command::Command::Set { key, value })?;
+        let kvs_command = bson::to_document(&command::Command::Set {
+            key: key.clone(),
+            value,
+        })?;
         // Open DB
         let f = OpenOptions::new()
             .append(true)
             .create(true)
-            .open("db.bson")
+            .open(&self.db_path)
             .with_context(|| {
-                "Unable to open the database file: \"db.bson\" for appending".to_string()
+                format!(
+                    "Unable to open the database file: {} for appending",
+                    self.db_path.to_str().unwrap()
+                )
             })?;
         let mut db_writer = BufWriter::new(f);
+        let curr_pos = db_writer.stream_position().unwrap();
         // Append the command at the end
         kvs_command.to_writer(&mut db_writer)?;
-        //self.hm.insert(key, value);
+        // Add to in-memory DB
+        self.hm.insert(key, curr_pos);
+        db_writer.flush()?;
         Ok(())
     }
 
     /// Drops the key value pair from key store
     /// # Examples
     /// ```
+    /// use tempfile::TempDir;
     /// let value1 = String::from("value1");
-    /// let mut my_kvs = kvs::KvStore::new();
-    /// my_kvs.set(String::from("key1"), value1);
-    /// assert_eq!(my_kvs.get(String::from("key1")), Some(String::from("value1")));
-    /// my_kvs.remove( String::from("key1"));
-    /// assert_eq!(my_kvs.get(String::from("key1")), None);
+    /// let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    /// let mut my_kvs = kvs::KvStore::open(temp_dir.path()).unwrap();
+    /// my_kvs.set(String::from("key1"), value1).unwrap();
+    /// assert_eq!(my_kvs.get(String::from("key1")).unwrap().unwrap(), String::from("value1"));
+    /// my_kvs.remove( String::from("key1")).unwrap();
+    /// assert_eq!(my_kvs.get(String::from("key1")).unwrap_err().to_string(), String::from("Key not found"));
     /// ```
     pub fn remove(&mut self, key: String) -> Result<()> {
+        self.hm.remove(&key).ok_or(anyhow!("Key not found"))?;
         let kvs_command = bson::to_document(&command::Command::Rm { key })?;
         // Open DB
         let f = OpenOptions::new()
             .append(true)
-            .open("db.bson")
+            .create(true)
+            .open(&self.db_path)
             .with_context(|| {
-                "Unable to open the database file: \"db.bson\" for appending".to_string()
+                format!(
+                    "Unable to open the database file: {} for appending",
+                    self.db_path.to_str().unwrap()
+                )
             })?;
         let mut db_writer = BufWriter::new(f);
         // Append the command at the end
         kvs_command.to_writer(&mut db_writer)?;
-        //self.hm.insert(key, value);
+        db_writer.flush()?;
         Ok(())
     }
 }
