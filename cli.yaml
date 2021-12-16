@@ -1,7 +1,7 @@
 ---
 name: kvs
-version: 0.1.0
-author: Kartik Sharma <kartiksharma@duck.com>
+version: 0.1.1
+author: Kartik Sharma <kartik.sharma522@gmail.com>
 about: The keyvalue store stores values in-memory and offers a cmd client
 args:
   - verbose:
