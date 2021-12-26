@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+
+set -eo pipefail
+set -o nounset
+set -o errexit
+
+usage () {
+	cat 1>&2 <<EOF
+The installer for RABX: A simple key value store
+
+USAGE:
+	./install
+	OR
+	bash install
+EOF
+}
+
+declare -g _dir
+
+main() {
+	# Check Arguments
+	for arg in "$@"; do
+		case "$arg" in
+			-h|--help)
+				usage
+				exit 0
+				;;
+			*)
+				;;
+		esac
+	done
+
+	# Check for available commands
+	need_cmd uname
+	need_cmd curl
+	need_cmd chmod
+	need_cmd install
+	need_cmd grep
+	need_cmd xargs
+	need_cmd cut
+	need_cmd sudo
+	need_cmd mktemp
+	need_cmd rm
+
+	# Start install
+	__install
+
+	__cleanup
+	exit 0
+}
+
+__install() {
+	local _ostype _cputype _clibtype _target _install_path _location
+	_ostype="$(uname -s)"
+	_cputype="$(uname -m)"
+	_install_path="/usr/local/bin"
+
+	# Create working directory
+	_dir="$(mktemp -d)"
+	mkdir -p "${_dir}"
+
+	case $_cputype in
+		x86_64 | x86-64 | amd64)
+			_cputype="x86_64"
+			_clibtype="muslc"
+			;;
+		*)
+			__error "No binaries are available for your cpu architecture ${_cputype}"
+			exit 1
+			;;
+	esac
+
+	case $_ostype in
+		Linux)
+			_ostype="unknown-linux-${_clibtype}"
+			;;
+		Darwin)
+			_ostype="apple-darwin"
+			;;
+		*)
+			__error "No binaries are available for your operating system ${_ostype}"
+	esac
+
+	_target="${_cputype}-${_ostype}"
+	__info "Detected target: ${_target}"
+
+	pushd "${_dir}" > /dev/null
+	_location="$(curl -s "https://api.github.com/repos/crazystylus/rabx/releases/latest" | grep "browser_download_url" | cut -d '"' -f 4 | grep "$_target")"
+
+	ensure curl -sLJO "${_location}"
+
+	ensure sudo install -o root -g root -m 0755 "kvs-${_target}" "${_install_path}/kvs"
+
+	popd > /dev/null
+
+	__success "RABX  is installed"
+	__warning "Please ensure that ${_install_path} is added to your \$PATH variable"
+}
+
+need_cmd() {
+	if ! cmd_chk "$1"; then
+		__error "need $1 (command not found)"
+	fi
+}
+
+cmd_chk() {
+	command -v "$1" > /dev/null 2>&1
+}
+
+ensure() {
+	if ! "$@"; then
+		__cleanup
+		__error "command failed: $*"
+	fi
+}
+
+
+
+# Trap Handle
+__cleanup() {
+	rm -rf "${_dir}" || true
+	__info "Cleanup Successful"
+}
+handle_exit() {
+	# Handle Cleanup here
+	__error "Failure, cleaning up"
+	__cleanup
+	exit 1
+}
+trap handle_exit 1 SIGHUP SIGINT SIGQUIT SIGABRT SIGTERM
+
+# Logging functions: Format --> "[LEVEL]: {message}"
+__info() {
+	printf "[INFO]: %s\n" "$1" >&1
+}
+__success() {
+	printf "\033[32m[INFO]: %s\033[0m\n" "$1" >&1
+}
+__warning() {
+	printf "\033[33m[WARNING]: %s\033[0m\n" "$1" >&2
+}
+__error() {
+	printf "\033[31;1m[ERROR]: %s\033[0m\n" "$1" >&2
+	exit 1
+}
+
+main "$@" || exit 1
