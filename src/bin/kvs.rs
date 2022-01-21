@@ -3,6 +3,7 @@ use clap::{load_yaml, App};
 
 fn main() -> Result<()> {
     let yaml = load_yaml!("../../cli.yaml");
+    let mut app = App::from(yaml);
     let matches = App::from(yaml).get_matches();
     let mut db_store = kvs::KvStore::open(std::path::PathBuf::new())?;
     match matches.subcommand() {
@@ -27,7 +28,11 @@ fn main() -> Result<()> {
             }
             //            println!("RM: {}", key);
         }
-        _ => unreachable!(),
+        _ => {
+            eprintln!("\x1b[31;1mNo subcommand found. Plese retry with a valid subcommand\x1b[0m");
+            app.print_help()?;
+            std::process::exit(1);
+        }
     }
     Ok(())
 }
